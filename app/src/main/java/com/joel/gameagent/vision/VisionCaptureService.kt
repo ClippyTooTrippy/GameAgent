@@ -529,7 +529,7 @@ class VisionCaptureService : Service() {
         // "14,227") isn't a button - tapping it never does anything.
         // Filtering these out stops it wasting actions on the coin
         // counter over and over.
-        val counterPattern = Regex("^[\\$S]?[\\d,.]+$")
+        val counterPattern = Regex("^[S$]?[\\d,.]+$")
         val ocrTaps = state.elements
             .filter { it.className == "ocr_text" && !isAdBait(it) && !counterPattern.matches(it.text.trim()) }
             .map { GameAction.Tap(it) }
