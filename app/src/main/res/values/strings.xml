@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">GameAgent</string>
+    <string name="accessibility_service_description">Lets GameAgent read the screen and tap for you in the app you choose, so it can learn to play it.</string>
+</resources>
