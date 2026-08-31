@@ -86,6 +86,14 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
         memory = MemoryStore(applicationContext)
 
+        val prefs = getSharedPreferences("gameagent_prefs", MODE_PRIVATE)
+        binding.apiKeyInput.setText(prefs.getString("gemini_api_key", ""))
+
+        binding.saveApiKeyButton.setOnClickListener {
+            prefs.edit().putString("gemini_api_key", binding.apiKeyInput.text.toString().trim()).apply()
+            binding.statusText.text = "API key saved. Restart if it's currently running for this to take effect."
+        }
+
         binding.enableAccessibilityButton.setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }

@@ -10,9 +10,38 @@
     android:padding="24dp">
 
     <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:text="Real AI reasoning (optional):"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Free key from aistudio.google.com/apikey. Without one, it runs fully local and free, but dumber."
+        android:textSize="12sp" />
+
+    <EditText
+        android:id="@+id/apiKeyInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:hint="Paste your Gemini API key here"
+        android:inputType="textPassword" />
+
+    <Button
+        android:id="@+id/saveApiKeyButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Save key" />
+
+    <TextView
         android:id="@+id/statusText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
         android:textSize="16sp"
         android:text="Not running" />
 

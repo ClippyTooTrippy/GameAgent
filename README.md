@@ -5,29 +5,51 @@ gets better over time by remembering what worked. This is a *learning*
 agent, not a scripted macro bot — nothing in here is hardcoded to a
 specific game.
 
-## How it actually works (vision mode)
+## How it actually works
 
-1. **Sees the screen** — `VisionCaptureService` captures real screen pixels via
-   Android's `MediaProjection` API (a system screen-recording permission you
-   grant once per session). This works on *any* app — native menus, a Unity
-   game's rendered canvas, even a live video stream — because a screenshot
-   doesn't care what drew it. On-device OCR (ML Kit Text Recognition) reads
-   any visible text and its position. Anything without text — icons,
-   sprites, arbitrary buttons — is still covered by a generic grid of
-   tappable regions laid over the whole screen, so the agent can learn to
-   tap things it has no label for at all.
-2. **Decides what to do** — same as before: `GeminiNanoBrain` asks on-device
-   Gemini Nano which candidate looks sensible, checked against what's
-   worked before; falls back to `HeuristicFallbackBrain` (best learned
-   action + 15% random exploration) on phones without Nano.
-3. **Learns** — after every action, checks whether the biggest number OCR
-   found on screen went up or down, and updates the (screen layout, action)
-   reward table in a local Room database.
+1. **Sees the screen** — `VisionCaptureService` captures real screen pixels
+   via Android's `MediaProjection` API (a system screen-recording permission
+   you grant once per session). Works on any app - native menus, a game's
+   rendered canvas, even video - because a screenshot doesn't care what drew
+   it. On-device OCR (ML Kit Text Recognition) reads visible text and its
+   position; a generic grid of tappable regions covers everything else
+   (icons, sprites, unlabeled buttons) so nothing is invisible to it.
+2. **Decides what to do** — two very different modes, depending on whether
+   you've set an API key:
+   - **With a key** (`CloudVisionBrain`): the actual screenshot is sent to
+     Google's Gemini vision-language model along with the candidate actions
+     and your instruction, and it picks one with a real one-line reason.
+     This is genuine reasoning about what's on screen, not pattern
+     averaging.
+   - **Without a key** (`HeuristicFallbackBrain`): picks whatever action has
+     the best learned track record for this exact screen, with 15% random
+     exploration. Fully local, fully private, free - and noticeably dumber.
+   - A simple keyword match against your typed/spoken instruction sits
+     between the two as a fallback if the cloud call fails on a given
+     frame.
+3. **Learns** — regardless of which brain picked the action, every outcome
+   (did the score go up or down) gets recorded in a local Room database
+   keyed by screen layout + action. This happens either way, so even cloud
+   mode builds real local memory over time.
 
-The old accessibility-tree reading (`GameAgentAccessibilityService`) is
-still there, but now only as the "hands" — it dispatches the actual taps
-and swipes, since only an AccessibilityService can inject touch input
-without root — plus it cheaply tracks which app is in the foreground.
+`GameAgentAccessibilityService` is just the "hands" now - it dispatches
+taps/swipes/back/home (only an AccessibilityService can inject touch input
+without root) and tracks which app is in the foreground.
+
+### Setting up real AI reasoning
+
+1. Go to https://aistudio.google.com/apikey and generate a free API key
+   (Google's free tier covers this kind of light use, but check current
+   limits/pricing yourself since that can change).
+2. Paste it into the "Real AI reasoning" field in the app, tap Save key.
+3. Restart vision mode if it was already running.
+
+Without a key, everything works exactly as it did before - fully offline,
+nothing ever leaves your phone. With a key, screenshots of whatever app
+you point it at (never excluded apps - those are never even captured) get
+sent to Google's API to be analyzed. That trade-off is the whole point:
+real understanding of the screen, at the cost of it no longer being fully
+local for the app(s) you're actually running it against.
 
 ## What's real here vs. what to expect
 

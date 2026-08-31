@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
@@ -22,8 +23,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.joel.gameagent.GameAgentAccessibilityService
-import com.joel.gameagent.brain.DecisionEngine
-import com.joel.gameagent.brain.GeminiNanoBrain
+import com.joel.gameagent.brain.CloudVisionBrain
 import com.joel.gameagent.brain.HeuristicFallbackBrain
 import com.joel.gameagent.memory.MemoryStore
 import com.joel.gameagent.model.GameAction
@@ -114,7 +114,8 @@ class VisionCaptureService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.Default + Job())
     private lateinit var memory: MemoryStore
-    private lateinit var brain: DecisionEngine
+    private lateinit var fallback: HeuristicFallbackBrain
+    private var cloudBrain: CloudVisionBrain? = null
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     private var tts: TextToSpeech? = null
 
@@ -167,7 +168,14 @@ class VisionCaptureService : Service() {
         startForeground(NOTIF_ID, buildNotification())
         memory = MemoryStore(applicationContext)
         val fallback = HeuristicFallbackBrain(memory)
-        brain = GeminiNanoBrain(applicationContext, memory, fallback)
+        this.fallback = fallback
+        val apiKey = getSharedPreferences("gameagent_prefs", Context.MODE_PRIVATE)
+            .getString("gemini_api_key", "").orEmpty()
+        cloudBrain = if (apiKey.isNotBlank()) CloudVisionBrain(apiKey) else null
+        logThought(
+            if (cloudBrain != null) "Real AI reasoning is on (using your Gemini key)."
+            else "No API key set - running on local learning only. Add one in Settings for real reasoning."
+        )
 
         val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
@@ -329,48 +337,65 @@ class VisionCaptureService : Service() {
 
         val candidates = buildCandidateActions(state)
 
-        // If the user typed/spoke an instruction, and any candidate's
-        // visible text matches a word from it, strongly favour that
-        // candidate instead of the normal learned/exploratory pick. This
-        // is the "chat box" steering mechanism - simple keyword bias
-        // rather than true language understanding, since this phone has
-        // no Nano to reason about it properly.
-        val instruction = currentInstruction.trim().lowercase()
-        val stopwords = setOf(
-            "the", "and", "for", "with", "until", "aim", "game", "open", "okay",
-            "your", "that", "this", "avoiding", "counter", "bottom", "empty"
-        )
-        val instructed = if (instruction.isNotEmpty()) {
-            val words = instruction.split(Regex("[,.]?\\s+"))
-                .filter { it.length > 4 && it !in stopwords }
-            if (words.isEmpty()) null else {
-                candidates.filterIsInstance<GameAction.Tap>().firstOrNull { tap ->
-                    val label = tap.element.text.lowercase()
-                    label.length in 3..60 && words.any { w -> label.contains(w) }
-                }
+        // Decision priority: real AI reasoning (if a key is set) first,
+        // since it can understand the instruction properly and actually
+        // look at the screen - then simple keyword matching, then the
+        // local learned/exploration fallback. Each step only runs if the
+        // one before it didn't produce an answer.
+        val instruction = currentInstruction.trim()
+        var chosen: GameAction? = null
+        var reasoning = ""
+
+        val cb = cloudBrain
+        if (cb != null) {
+            val decision = cb.choose(bitmap, state, candidates, instruction)
+            if (decision != null) {
+                chosen = candidates.getOrNull(decision.index)
+                reasoning = "AI: ${decision.reason.ifBlank { "no reason given" }}"
+            } else {
+                reasoning = "AI call failed/skipped this frame - using local fallback"
             }
-        } else null
-
-        val chosen = instructed ?: brain.choose(state, candidates)
-
-        val reasoning = when {
-            instructed != null -> "instruction match ('$instruction')"
-            chosen is GameAction.Tap && chosen.element.className == "ocr_text" -> "read text \"${chosen.element.text.take(30)}\""
-            else -> "learned/explored"
         }
-        logThought("[${state.packageName}] ${chosen.describe()} - $reasoning")
+
+        if (chosen == null) {
+            val stopwords = setOf(
+                "the", "and", "for", "with", "until", "aim", "game", "open", "okay",
+                "your", "that", "this", "avoiding", "counter", "bottom", "empty"
+            )
+            val lowered = instruction.lowercase()
+            val instructed = if (lowered.isNotEmpty()) {
+                val words = lowered.split(Regex("[,.]?\\s+")).filter { it.length > 4 && it !in stopwords }
+                if (words.isEmpty()) null else {
+                    candidates.filterIsInstance<GameAction.Tap>().firstOrNull { tap ->
+                        val label = tap.element.text.lowercase()
+                        label.length in 3..60 && words.any { w -> label.contains(w) }
+                    }
+                }
+            } else null
+
+            chosen = instructed ?: fallback.choose(state, candidates)
+            reasoning = when {
+                instructed != null -> "instruction match ('$lowered')"
+                chosen is GameAction.Tap && (chosen as GameAction.Tap).element.className == "ocr_text" ->
+                    "read text \"${(chosen as GameAction.Tap).element.text.take(30)}\""
+                else -> "learned/explored"
+            }
+        }
+
+        val finalAction = chosen ?: GameAction.WaitAndRecheck
+        logThought("[${state.packageName}] ${finalAction.describe()} - $reasoning")
 
         actionsSinceLastSpeech++
         if (actionsSinceLastSpeech >= 8) {
             actionsSinceLastSpeech = 0
-            speak(shortSpokenSummary(chosen, state.packageName))
+            speak(shortSpokenSummary(finalAction, state.packageName))
         }
 
-        lastActionKey = chosen.describe()
+        lastActionKey = finalAction.describe()
         lastScreenHash = state.layoutHash()
         lastMetric = state.primaryMetric()
 
-        perform(chosen)
+        perform(finalAction)
     }
 
     private fun shortSpokenSummary(action: GameAction, pkg: String): String {
