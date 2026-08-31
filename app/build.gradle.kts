@@ -64,7 +64,7 @@ dependencies {
     // and update GeminiNanoBrain.kt accordingly - the rest of the app
     // does not need to change, since everything talks to the
     // DecisionEngine interface, not this library directly.
-    
+    implementation("com.google.mlkit:genai-summarization:1.0.0-beta1")
 
     testImplementation("junit:junit:4.13.2")
 }

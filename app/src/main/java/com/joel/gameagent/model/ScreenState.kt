@@ -47,15 +47,21 @@ data class ScreenState(
     fun primaryMetric(): Long = numbersOnScreen.maxOrNull() ?: 0L
 }
 
-/** An action the agent can take: tap a specific element, or swipe in a direction. */
+/** An action the agent can take: tap, swipe, or navigate the phone itself. */
 sealed class GameAction {
     data class Tap(val element: ScreenElement) : GameAction()
     data class Swipe(val fromX: Int, val fromY: Int, val toX: Int, val toY: Int) : GameAction()
+    object GoBack : GameAction()
+    object GoHome : GameAction()
+    data class LaunchApp(val packageName: String) : GameAction()
     object WaitAndRecheck : GameAction()
 
     fun describe(): String = when (this) {
         is Tap -> "tap(${element.text.ifBlank { element.contentDescription }.ifBlank { element.className }})"
         is Swipe -> "swipe($fromX,$fromY -> $toX,$toY)"
+        GoBack -> "back"
+        GoHome -> "home"
+        is LaunchApp -> "launch($packageName)"
         WaitAndRecheck -> "wait"
     }
 }

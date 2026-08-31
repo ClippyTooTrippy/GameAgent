@@ -20,15 +20,19 @@ class MainActivity : AppCompatActivity() {
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        val pkg = binding.packageInput.text.toString().trim()
-        if (result.resultCode == RESULT_OK && result.data != null && pkg.isNotEmpty()) {
+        val excluded = binding.packageInput.text.toString().trim()
+        if (result.resultCode == RESULT_OK && result.data != null) {
             val intent = Intent(this, VisionCaptureService::class.java).apply {
                 putExtra(VisionCaptureService.EXTRA_RESULT_CODE, result.resultCode)
                 putExtra(VisionCaptureService.EXTRA_RESULT_DATA, result.data)
-                putExtra(VisionCaptureService.EXTRA_TARGET_PACKAGE, pkg)
+                putExtra(VisionCaptureService.EXTRA_EXCLUDED_PACKAGES, excluded)
             }
             startForegroundService(intent)
-            binding.statusText.text = "Vision mode running against: $pkg\n(switch to that app now)"
+            binding.statusText.text = if (excluded.isNotEmpty()) {
+                "Vision mode running - free-roaming, staying out of:\n$excluded"
+            } else {
+                "Vision mode running - free-roaming the whole phone (nothing excluded)"
+            }
         } else {
             binding.statusText.text = "Screen capture permission was needed to start"
         }
@@ -45,8 +49,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.startButton.setOnClickListener {
-            val pkg = binding.packageInput.text.toString().trim()
-            if (pkg.isEmpty()) return@setOnClickListener
             val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())
         }

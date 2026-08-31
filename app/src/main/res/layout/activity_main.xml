@@ -17,7 +17,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
-        android:hint="Target app package, e.g. com.scopely.monopolygo" />
+        android:hint="Optional: apps to never touch, comma-separated e.g. com.yourbank.app,com.whatsapp" />
 
     <Button
         android:id="@+id/enableAccessibilityButton"
@@ -31,7 +31,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="2. Start vision mode on target app" />
+        android:text="2. Start free-roaming (with exclusions)" />
 
     <Button
         android:id="@+id/stopButton"

@@ -2,6 +2,7 @@ package com.joel.gameagent
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.Intent
 import android.graphics.Path
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
@@ -61,5 +62,22 @@ class GameAgentAccessibilityService : AccessibilityService() {
             .addStroke(GestureDescription.StrokeDescription(path, 0, 250))
             .build()
         dispatchGesture(gesture, null, null)
+    }
+
+    /** Same as pressing the system Back button/gesture. */
+    fun goBack() {
+        performGlobalAction(GLOBAL_ACTION_BACK)
+    }
+
+    /** Same as pressing the system Home button/gesture. */
+    fun goHome() {
+        performGlobalAction(GLOBAL_ACTION_HOME)
+    }
+
+    /** Brings a specific app to the foreground directly, rather than hoping Back/Home gets there. */
+    fun launchApp(packageName: String) {
+        val intent = packageManager.getLaunchIntentForPackage(packageName) ?: return
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
     }
 }

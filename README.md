@@ -63,6 +63,24 @@ be compiled to an APK from a plain text editor.
    or use an emulator.
 4. Click **Run**.
 
+## Free-roam mode with exclusions
+
+GameAgent now roams the whole phone by default - it's not locked to one
+app. Each app gets its own learned action table automatically (the
+screen fingerprint includes the package name), so experience in one app
+never bleeds into another.
+
+Instead of confining it to one app, you give it a **blocklist**: apps it
+must never act inside at all - banking apps, messaging, anything
+sensitive. This is a hard boundary, checked before anything else every
+frame: the moment the excluded app is in the foreground, GameAgent
+doesn't capture, doesn't OCR, doesn't tap - it just presses Home and
+leaves. It's the safer default when the agent is roaming freely rather
+than staying inside one app you're watching closely.
+
+Comma-separate multiple packages in the field, e.g.
+`com.yourbank.app,com.whatsapp,com.google.android.apps.messaging`.
+
 ## Using it
 
 1. Launch GameAgent, tap **Enable Accessibility Service**, find "GameAgent"

@@ -63,7 +63,8 @@ class VisionCaptureService : Service() {
 
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
-        const val EXTRA_TARGET_PACKAGE = "target_package"
+        /** Comma-separated package names the agent must never act inside. */
+        const val EXTRA_EXCLUDED_PACKAGES = "excluded_packages"
 
         @Volatile var isRunning: Boolean = false
     }
@@ -76,7 +77,8 @@ class VisionCaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
-    private var targetPackage: String? = null
+    /** Packages the agent must never tap inside - checked before anything else, every frame. */
+    private var excludedPackages: Set<String> = emptySet()
 
     private var lastActionKey: String? = null
     private var lastScreenHash: String? = null
@@ -87,10 +89,15 @@ class VisionCaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
         val resultData = intent?.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
-        targetPackage = intent?.getStringExtra(EXTRA_TARGET_PACKAGE)
+        excludedPackages = intent?.getStringExtra(EXTRA_EXCLUDED_PACKAGES)
+            ?.split(",")
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?.toSet()
+            ?: emptySet()
 
-        if (resultData == null || targetPackage.isNullOrBlank()) {
-            Log.e(TAG, "Missing projection permission or target package - stopping")
+        if (resultData == null) {
+            Log.e(TAG, "Missing projection permission - stopping")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -144,13 +151,20 @@ class VisionCaptureService : Service() {
     }
 
     private suspend fun actOnce() {
-        // Only act while the target app is actually in front - the
-        // accessibility "hands" service tracks this cheaply for us.
         val foreground = GameAgentAccessibilityService.currentForegroundPackage
-        if (foreground != null && foreground != targetPackage) return
+
+        // Hard safety boundary: if we've landed in an excluded app
+        // (banking, messaging, whatever's on the blocklist), don't look
+        // at it, don't tap in it, don't even OCR it - just leave
+        // immediately. This runs before any capture/OCR/decision work,
+        // so an excluded app never gets touched in any way.
+        if (foreground != null && foreground in excludedPackages) {
+            perform(GameAction.GoHome)
+            return
+        }
 
         val bitmap = captureFrame() ?: return
-        val state = buildScreenState(bitmap)
+        val state = buildScreenState(bitmap, foreground.orEmpty())
 
         // Ad-close check takes priority over everything else - same
         // idea as before, just matched against OCR'd text now instead
@@ -200,7 +214,7 @@ class VisionCaptureService : Service() {
     }
 
     /** Builds a ScreenState out of OCR'd text blocks plus a fallback grid of generic regions. */
-    private suspend fun buildScreenState(bitmap: Bitmap): ScreenState {
+    private suspend fun buildScreenState(bitmap: Bitmap, foregroundPackage: String): ScreenState {
         val elements = mutableListOf<ScreenElement>()
         val numbers = mutableListOf<Long>()
 
@@ -244,7 +258,7 @@ class VisionCaptureService : Service() {
         }
 
         return ScreenState(
-            packageName = targetPackage.orEmpty(),
+            packageName = foregroundPackage,
             elements = elements,
             numbersOnScreen = numbers
         )
@@ -271,7 +285,11 @@ class VisionCaptureService : Service() {
         val gridTaps = state.elements.filter { it.className.startsWith("grid_") }
             .shuffled().take(20).map { GameAction.Tap(it) }
         val swipe = GameAction.Swipe(fromX = 540, fromY = 1600, toX = 540, toY = 800)
-        return ocrTaps + gridTaps + swipe
+        // Back is always offered as a real candidate (not just forced
+        // recovery) - some games use it deliberately (closing a menu,
+        // dismissing a dialog), so it should be something the agent can
+        // learn is sometimes the right move, not only an emergency escape.
+        return ocrTaps + gridTaps + swipe + GameAction.GoBack
     }
 
     private fun perform(action: GameAction) {
@@ -282,6 +300,9 @@ class VisionCaptureService : Service() {
         when (action) {
             is GameAction.Tap -> hands.performTap(action.element.centerX, action.element.centerY)
             is GameAction.Swipe -> hands.performSwipe(action.fromX, action.fromY, action.toX, action.toY)
+            GameAction.GoBack -> hands.goBack()
+            GameAction.GoHome -> hands.goHome()
+            is GameAction.LaunchApp -> hands.launchApp(action.packageName)
             GameAction.WaitAndRecheck -> { /* no-op */ }
         }
     }
@@ -293,7 +314,10 @@ class VisionCaptureService : Service() {
         }
         return NotificationCompat.Builder(this, NOTIF_CHANNEL)
             .setContentTitle("GameAgent is watching and playing")
-            .setContentText(targetPackage)
+            .setContentText(
+                if (excludedPackages.isEmpty()) "free-roaming the phone"
+                else "roaming, excluding ${excludedPackages.size} app(s)"
+            )
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setOngoing(true)
             .build()
