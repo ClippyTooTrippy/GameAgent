@@ -1,5 +1,10 @@
 name: Build debug APK
 
+# Builds a debug APK on every push to main, and lets you trigger it
+# manually from the GitHub app/website too (Actions tab -> Run workflow).
+# The resulting APK is attached as a downloadable "artifact" - no PC
+# involved at any point, this all runs on GitHub's servers.
+
 on:
   push:
     branches: [ main ]

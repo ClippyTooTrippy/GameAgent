@@ -5,24 +5,29 @@ gets better over time by remembering what worked. This is a *learning*
 agent, not a scripted macro bot — nothing in here is hardcoded to a
 specific game.
 
-## How it actually works
+## How it actually works (vision mode)
 
-1. **Sees the screen** — `GameAgentAccessibilityService` uses Android's
-   Accessibility API (the same one screen readers use) to read every
-   tappable element on screen: its text, position, and type. It also
-   scrapes any numbers visible on screen (coins, scores, etc.).
-2. **Decides what to do** — `GeminiNanoBrain` asks on-device Gemini Nano
-   which candidate action looks most sensible, then checks that choice
-   against what's actually worked before. If Nano isn't available on your
-   phone, `HeuristicFallbackBrain` takes over automatically — it picks
-   whatever action has the best learned track record for this exact
-   screen, with 15% random exploration so it keeps discovering new
-   options instead of getting stuck.
-3. **Learns** — after every action, it checks whether the on-screen
-   numbers went up or down since the last action, and stores that as the
-   reward for (this screen layout, that action) in a local Room database.
-   Over many playthroughs the average reward per action gets more
-   accurate — that's the "learning."
+1. **Sees the screen** — `VisionCaptureService` captures real screen pixels via
+   Android's `MediaProjection` API (a system screen-recording permission you
+   grant once per session). This works on *any* app — native menus, a Unity
+   game's rendered canvas, even a live video stream — because a screenshot
+   doesn't care what drew it. On-device OCR (ML Kit Text Recognition) reads
+   any visible text and its position. Anything without text — icons,
+   sprites, arbitrary buttons — is still covered by a generic grid of
+   tappable regions laid over the whole screen, so the agent can learn to
+   tap things it has no label for at all.
+2. **Decides what to do** — same as before: `GeminiNanoBrain` asks on-device
+   Gemini Nano which candidate looks sensible, checked against what's
+   worked before; falls back to `HeuristicFallbackBrain` (best learned
+   action + 15% random exploration) on phones without Nano.
+3. **Learns** — after every action, checks whether the biggest number OCR
+   found on screen went up or down, and updates the (screen layout, action)
+   reward table in a local Room database.
+
+The old accessibility-tree reading (`GameAgentAccessibilityService`) is
+still there, but now only as the "hands" — it dispatches the actual taps
+and swipes, since only an AccessibilityService can inject touch input
+without root — plus it cheaply tracks which app is in the foreground.
 
 ## What's real here vs. what to expect
 
@@ -61,19 +66,22 @@ be compiled to an APK from a plain text editor.
 ## Using it
 
 1. Launch GameAgent, tap **Enable Accessibility Service**, find "GameAgent"
-   in the list, and turn it on (Android will show a scary-looking warning
-   about full screen access — that's normal for any accessibility
-   service, it's what lets it work at all).
-2. Back in GameAgent, type the target app's package name (e.g.
-   `com.scopely.monopolygo`) and hit **Start**.
-3. Switch to that app. GameAgent will start reading the screen and
-   tapping things in the background.
-4. Watch the "Learned screen/action pairs" counter on GameAgent's home
-   screen grow as it plays.
+   in the list, and turn it on. If it's greyed out saying "Controlled by
+   Restricted Setting" (Android blocks this by default for sideloaded
+   apps), go to Settings → Apps → GameAgent → three-dot menu → **Allow
+   restricted settings**, then come back and enable it.
+2. Type the target app's package name (e.g. `com.scopely.monopolygo`) and
+   hit **Start vision mode on target app**.
+3. Android will show a system dialog asking to allow screen capture/
+   recording — approve it. This is normal and required; it's how the app
+   sees the screen. You'll get a persistent notification while it's
+   running (Android requires this for any app capturing the screen).
+4. Switch to the target app. GameAgent starts reading the screen roughly
+   once a second and tapping things.
+5. Watch the "Learned screen/action pairs" counter grow.
 
-Finding a package name: Settings → Apps → the app → the package name is
-usually shown near the bottom, or search "`<app name>` package name" on
-Google Play's web listing URL.
+Set GameAgent's battery mode to **Unrestricted** (Settings → Apps →
+GameAgent → Battery) so Android doesn't kill it in the background.
 
 ## Things worth knowing before you run this on a real account
 

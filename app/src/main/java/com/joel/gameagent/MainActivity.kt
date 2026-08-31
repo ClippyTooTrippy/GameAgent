@@ -1,18 +1,38 @@
 package com.joel.gameagent
 
 import android.content.Intent
+import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.provider.Settings
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.joel.gameagent.databinding.ActivityMainBinding
 import com.joel.gameagent.memory.MemoryStore
+import com.joel.gameagent.vision.VisionCaptureService
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var memory: MemoryStore
+
+    private val screenCaptureLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val pkg = binding.packageInput.text.toString().trim()
+        if (result.resultCode == RESULT_OK && result.data != null && pkg.isNotEmpty()) {
+            val intent = Intent(this, VisionCaptureService::class.java).apply {
+                putExtra(VisionCaptureService.EXTRA_RESULT_CODE, result.resultCode)
+                putExtra(VisionCaptureService.EXTRA_RESULT_DATA, result.data)
+                putExtra(VisionCaptureService.EXTRA_TARGET_PACKAGE, pkg)
+            }
+            startForegroundService(intent)
+            binding.statusText.text = "Vision mode running against: $pkg\n(switch to that app now)"
+        } else {
+            binding.statusText.text = "Screen capture permission was needed to start"
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -27,13 +47,12 @@ class MainActivity : AppCompatActivity() {
         binding.startButton.setOnClickListener {
             val pkg = binding.packageInput.text.toString().trim()
             if (pkg.isEmpty()) return@setOnClickListener
-            GameAgentAccessibilityService.targetPackage = pkg
-            GameAgentAccessibilityService.isRunning = true
-            binding.statusText.text = "Running against: $pkg\n(switch to that app now)"
+            val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())
         }
 
         binding.stopButton.setOnClickListener {
-            GameAgentAccessibilityService.isRunning = false
+            stopService(Intent(this, VisionCaptureService::class.java))
             binding.statusText.text = "Stopped"
         }
 

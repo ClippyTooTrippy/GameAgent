@@ -3,6 +3,7 @@
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
@@ -42,6 +43,17 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <!--
+            The "eyes" of vision mode. Captures the actual screen pixels
+            via MediaProjection - this works on ANY app, since unlike the
+            accessibility tree it doesn't care whether what's on screen is
+            native UI, a game engine's rendered canvas, or a video stream.
+        -->
+        <service
+            android:name=".vision.VisionCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
 
     </application>
 </manifest>
