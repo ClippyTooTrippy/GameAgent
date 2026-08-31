@@ -57,14 +57,7 @@ dependencies {
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
 
-    // On-device Gemini Nano access via ML Kit GenAI.
-    // NOTE: this API surface moves fast (it's a 2026 preview feature).
-    // If this artifact/class names have changed, check
-    // https://developer.android.com/ai/aicore and the ML Kit GenAI docs
-    // and update GeminiNanoBrain.kt accordingly - the rest of the app
-    // does not need to change, since everything talks to the
-    // DecisionEngine interface, not this library directly.
-    implementation("com.google.mlkit:genai-summarization:1.0.0-beta1")
-
+    // Gemini Nano decision-making itself is accessed through GeminiNanoBrain.kt
+    // via AICore, not a Gradle dependency here - see the TODO in that file.
     testImplementation("junit:junit:4.13.2")
 }
