@@ -192,6 +192,12 @@ class VisionCaptureService : Service() {
     private suspend fun actOnce() {
         val foreground = GameAgentAccessibilityService.currentForegroundPackage
 
+        // Never, ever act on ourselves. Without this, sitting on
+        // GameAgent's own screen typing an instruction turns into the
+        // agent tapping its own text fields and keyboard, corrupting
+        // whatever you just typed - this bit us once, never again.
+        if (foreground == packageName) return
+
         if (foreground != null && foreground in excludedPackages) {
             logThought("$foreground is excluded - going home, not looking at it.")
             perform(GameAction.GoHome)
@@ -221,11 +227,18 @@ class VisionCaptureService : Service() {
         // rather than true language understanding, since this phone has
         // no Nano to reason about it properly.
         val instruction = currentInstruction.trim().lowercase()
+        val stopwords = setOf(
+            "the", "and", "for", "with", "until", "aim", "game", "open", "okay",
+            "your", "that", "this", "avoiding", "counter", "bottom", "empty"
+        )
         val instructed = if (instruction.isNotEmpty()) {
-            val words = instruction.split(Regex("[,.]?\\s+")).filter { it.length > 2 }
-            candidates.filterIsInstance<GameAction.Tap>().firstOrNull { tap ->
-                val label = tap.element.text.lowercase()
-                label.isNotBlank() && words.any { w -> label.contains(w) }
+            val words = instruction.split(Regex("[,.]?\\s+"))
+                .filter { it.length > 4 && it !in stopwords }
+            if (words.isEmpty()) null else {
+                candidates.filterIsInstance<GameAction.Tap>().firstOrNull { tap ->
+                    val label = tap.element.text.lowercase()
+                    label.length in 3..60 && words.any { w -> label.contains(w) }
+                }
             }
         } else null
 
