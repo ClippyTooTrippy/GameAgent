@@ -61,10 +61,30 @@ class GameAgentAccessibilityService : AccessibilityService() {
         Log.w(TAG, "Service interrupted")
     }
 
+    private val adCloseSignals = listOf(
+        "skip ad", "skip", "close ad", "close", "no thanks", "x",
+        "dismiss", "continue without watching"
+    )
+
+    private fun findAdCloseElement(state: ScreenState): ScreenElement? {
+        return state.elements.firstOrNull { el ->
+            val label = (el.text + " " + el.contentDescription).trim().lowercase()
+            adCloseSignals.any { signal -> label == signal || label.endsWith(" $signal") }
+        }
+    }
+
     private suspend fun actOnce() {
         val root = rootInActiveWindow ?: return
         val state = readScreen(root)
 
+        if (state.packageName.isNotEmpty() && state.packageName != targetPackage) {
+            return
+        }
+
+        findAdCloseElement(state)?.let { closeButton ->
+            perform(GameAction.Tap(closeButton))
+            return
+        }
         // Reward = change in the best number we can read off screen
         // (coins, score, etc.) since our last action. This is the whole
         // learning signal - crude, but it works for the "number goes up"
