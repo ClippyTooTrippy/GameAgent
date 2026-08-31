@@ -41,18 +41,25 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val excluded = binding.packageInput.text.toString().trim()
+        val stayInApp = binding.stayInAppRadio.isChecked
+        val focusPkg = if (stayInApp) binding.focusPackageInput.text.toString().trim() else ""
+
+        if (stayInApp && focusPkg.isEmpty()) {
+            binding.statusText.text = "Pick 'Stay in one app' and also fill in which app, or switch to free-roam"
+            return@registerForActivityResult
+        }
+
         if (result.resultCode == RESULT_OK && result.data != null) {
             val intent = Intent(this, VisionCaptureService::class.java).apply {
                 putExtra(VisionCaptureService.EXTRA_RESULT_CODE, result.resultCode)
                 putExtra(VisionCaptureService.EXTRA_RESULT_DATA, result.data)
                 putExtra(VisionCaptureService.EXTRA_EXCLUDED_PACKAGES, excluded)
+                putExtra(VisionCaptureService.EXTRA_FOCUS_PACKAGE, focusPkg)
             }
             startForegroundService(intent)
-            binding.statusText.text = if (excluded.isNotEmpty()) {
-                "Vision mode running - free-roaming, staying out of:\n$excluded\n\nTip: pull down the notification and tap 'Instruct' to give it commands without opening this app."
-            } else {
-                "Vision mode running - free-roaming the whole phone (nothing excluded)\n\nTip: pull down the notification and tap 'Instruct' to give it commands without opening this app."
-            }
+            val modeLine = if (stayInApp) "Staying in: $focusPkg" else "Free-roaming the whole phone"
+            val exclLine = if (excluded.isNotEmpty()) "\nStaying out of:\n$excluded" else ""
+            binding.statusText.text = "Vision mode running.\n$modeLine$exclLine\n\nTip: pull down the notification and tap 'Instruct' to give it commands without opening this app."
         } else {
             binding.statusText.text = "Screen capture permission was needed to start"
         }
@@ -82,6 +89,11 @@ class MainActivity : AppCompatActivity() {
         binding.enableAccessibilityButton.setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
+
+        binding.modeGroup.setOnCheckedChangeListener { _, _ ->
+            binding.focusPackageInput.isEnabled = binding.stayInAppRadio.isChecked
+        }
+        binding.focusPackageInput.isEnabled = binding.stayInAppRadio.isChecked
 
         binding.startButton.setOnClickListener {
             val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager

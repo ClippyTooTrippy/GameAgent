@@ -16,6 +16,40 @@
         android:textSize="16sp"
         android:text="Not running" />
 
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="Mode:"
+        android:textStyle="bold" />
+
+    <RadioGroup
+        android:id="@+id/modeGroup"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <RadioButton
+            android:id="@+id/freeRoamRadio"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Free-roam the whole phone"
+            android:checked="true" />
+
+        <RadioButton
+            android:id="@+id/stayInAppRadio"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Stay in one app" />
+    </RadioGroup>
+
+    <EditText
+        android:id="@+id/focusPackageInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:hint="Package to stay in, e.g. com.gimica.treasuremaster" />
+
     <EditText
         android:id="@+id/packageInput"
         android:layout_width="match_parent"

@@ -60,6 +60,7 @@ class VisionCaptureService : Service() {
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         const val EXTRA_EXCLUDED_PACKAGES = "excluded_packages"
+        const val EXTRA_FOCUS_PACKAGE = "focus_package"
 
         @Volatile var isRunning: Boolean = false
 
@@ -121,12 +122,21 @@ class VisionCaptureService : Service() {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var excludedPackages: Set<String> = emptySet()
+    /** Optional - if set, the agent pulls itself back here instead of pure free-roam. */
+    private var focusPackage: String? = null
+    private var driftFrames = 0
     private var screenHeightPx = 0
+    private var screenWidthPx = 0
 
     private var lastActionKey: String? = null
     private var lastScreenHash: String? = null
     private var lastMetric: Long = 0L
     private var actionsSinceLastSpeech = 0
+
+    /** Consecutive frames with almost no readable text - a strong sign we're stuck inside a video ad. */
+    private var sparseFrameStreak = 0
+    private var lastCornerTried = 0
+    private var lastForegroundSeen: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -146,6 +156,7 @@ class VisionCaptureService : Service() {
             ?.filter { it.isNotEmpty() }
             ?.toSet()
             ?: emptySet()
+        focusPackage = intent?.getStringExtra(EXTRA_FOCUS_PACKAGE)?.trim()?.ifBlank { null }
 
         if (resultData == null) {
             Log.e(TAG, "Missing projection permission - stopping")
@@ -191,6 +202,7 @@ class VisionCaptureService : Service() {
         @Suppress("DEPRECATION")
         windowManager.defaultDisplay.getRealMetrics(metrics)
         screenHeightPx = metrics.heightPixels
+        screenWidthPx = metrics.widthPixels
 
         imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, PixelFormat.RGBA_8888, 2)
         virtualDisplay = mediaProjection?.createVirtualDisplay(
@@ -221,18 +233,87 @@ class VisionCaptureService : Service() {
         // whatever you just typed - this bit us once, never again.
         if (foreground == packageName) return
 
+        // Never act while a keyboard app is in front. If it's showing,
+        // some text field somewhere is focused and waiting for real
+        // input - blindly tapping keyboard keys could type garbage into
+        // a search box, a form, anything. Detected by package name
+        // pattern since IME packages reliably contain "inputmethod" or
+        // "keyboard".
+        if (foreground != null && (foreground.contains("inputmethod") || foreground.contains("keyboard"))) {
+            logThought("A keyboard is up - not touching it, backing away.")
+            perform(GameAction.GoBack)
+            return
+        }
+
         if (foreground != null && foreground in excludedPackages) {
             logThought("$foreground is excluded - going home, not looking at it.")
             perform(GameAction.GoHome)
             return
         }
 
+        // Focused mode: if we've drifted away from the app we're
+        // supposed to be staying in, give it a few frames to sort itself
+        // out (it might be a deliberate menu/ad it can close on its
+        // own), then actively pull back - Back a couple of times, then
+        // relaunch directly if that's not working.
+        val focus = focusPackage
+        if (focus != null && foreground != null && foreground != focus) {
+            driftFrames++
+        } else {
+            driftFrames = 0
+        }
+        if (focus != null && driftFrames >= 3) {
+            if (driftFrames < 6) {
+                logThought("Drifted out of $focus - trying to back out.")
+                perform(GameAction.GoBack)
+            } else {
+                logThought("Still not back in $focus - relaunching it directly.")
+                perform(GameAction.LaunchApp(focus))
+                driftFrames = 0
+            }
+            return
+        }
+
         val bitmap = captureFrame() ?: return
         val state = buildScreenState(bitmap, foreground.orEmpty())
 
+        if (foreground != lastForegroundSeen) {
+            sparseFrameStreak = 0
+            lastForegroundSeen = foreground
+        }
+
         findAdCloseElement(state)?.let { closeButton ->
             logThought("Looks like an ad/popup - closing it.")
+            sparseFrameStreak = 0
             perform(GameAction.Tap(closeButton))
+            return
+        }
+
+        val ocrTextCount = state.elements.count { it.className == "ocr_text" }
+        if (ocrTextCount < 3) {
+            sparseFrameStreak++
+        } else {
+            sparseFrameStreak = 0
+        }
+
+        // Most video ads have no readable "skip"/"close" text at all -
+        // just a bare X icon that appears after a few seconds. A screen
+        // with almost no text, held for several frames in a row, is a
+        // strong signal we're stuck watching one. Rather than let random
+        // grid taps loose on it (which can land on the ad's own call to
+        // action and open a store page), probe the two spots where every
+        // major ad network puts its close button: top-right, then
+        // top-left, one attempt every couple of seconds.
+        if (sparseFrameStreak >= 3 && screenWidthPx > 0 && screenHeightPx > 0) {
+            val margin = (screenHeightPx * SAFE_MARGIN_FRACTION).toInt() + 40
+            val corners = listOf(
+                screenWidthPx - 60 to margin,   // top-right - most common
+                60 to margin                     // top-left - second most common
+            )
+            val (cx, cy) = corners[lastCornerTried % corners.size]
+            lastCornerTried++
+            logThought("Looks like a video ad with no text - trying the close spot in the corner.")
+            perform(GameAction.Tap(ScreenElement("", "", "ad_corner_probe", cx, cy, true)))
             return
         }
 
@@ -419,8 +500,13 @@ class VisionCaptureService : Service() {
 
     private fun buildCandidateActions(state: ScreenState): List<GameAction> {
         val baitElements = state.elements.filter { it.className == "ocr_text" && isAdBait(it) }
+        // A block that's purely a number/currency counter ("$14,227",
+        // "14,227") isn't a button - tapping it never does anything.
+        // Filtering these out stops it wasting actions on the coin
+        // counter over and over.
+        val counterPattern = Regex("^[\\$S]?[\\d,.]+$")
         val ocrTaps = state.elements
-            .filter { it.className == "ocr_text" && !isAdBait(it) }
+            .filter { it.className == "ocr_text" && !isAdBait(it) && !counterPattern.matches(it.text.trim()) }
             .map { GameAction.Tap(it) }
 
         // Grid taps are coordinate-based, so filtering bait out of OCR
@@ -466,8 +552,11 @@ class VisionCaptureService : Service() {
         return NotificationCompat.Builder(this, NOTIF_CHANNEL)
             .setContentTitle("GameAgent is watching and playing")
             .setContentText(
-                if (excludedPackages.isEmpty()) "free-roaming the phone"
-                else "roaming, excluding ${excludedPackages.size} app(s)"
+                when {
+                    focusPackage != null -> "staying in ${focusPackage!!.substringAfterLast(".")}"
+                    excludedPackages.isEmpty() -> "free-roaming the phone"
+                    else -> "roaming, excluding ${excludedPackages.size} app(s)"
+                }
             )
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setOngoing(true)
