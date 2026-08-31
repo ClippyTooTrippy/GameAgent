@@ -1,11 +1,18 @@
 package com.joel.gameagent
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
+import android.speech.RecognizerIntent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.joel.gameagent.databinding.ActivityMainBinding
 import com.joel.gameagent.memory.MemoryStore
@@ -16,6 +23,19 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var memory: MemoryStore
+    private val uiHandler = Handler(Looper.getMainLooper())
+
+    /** Polls the running service's thought log so the UI feels "live" without any binding. */
+    private val thoughtLogPoller = object : Runnable {
+        private var tick = 0
+        override fun run() {
+            val entries = VisionCaptureService.thoughtLog
+            binding.thoughtLogText.text = if (entries.isEmpty()) "(nothing yet)" else entries.joinToString("\n")
+            tick++
+            if (tick % 5 == 0) refreshLearnedCount()
+            uiHandler.postDelayed(this, 1000)
+        }
+    }
 
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -35,6 +55,21 @@ class MainActivity : AppCompatActivity() {
             }
         } else {
             binding.statusText.text = "Screen capture permission was needed to start"
+        }
+    }
+
+    private val micPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> if (granted) launchSpeechRecognizer() }
+
+    private val speechLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val text = result.data
+            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+        if (!text.isNullOrBlank()) {
+            binding.instructionInput.setText(text)
         }
     }
 
@@ -58,12 +93,41 @@ class MainActivity : AppCompatActivity() {
             binding.statusText.text = "Stopped"
         }
 
+        binding.sendInstructionButton.setOnClickListener {
+            VisionCaptureService.currentInstruction = binding.instructionInput.text.toString()
+            binding.statusText.text = "Instruction sent: \"${VisionCaptureService.currentInstruction}\""
+        }
+
+        binding.micButton.setOnClickListener {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED
+            ) {
+                launchSpeechRecognizer()
+            } else {
+                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+
         refreshLearnedCount()
+    }
+
+    private fun launchSpeechRecognizer() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Tell GameAgent what to do")
+        }
+        speechLauncher.launch(intent)
     }
 
     override fun onResume() {
         super.onResume()
         refreshLearnedCount()
+        uiHandler.post(thoughtLogPoller)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        uiHandler.removeCallbacks(thoughtLogPoller)
     }
 
     private fun refreshLearnedCount() {

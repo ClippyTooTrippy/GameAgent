@@ -14,6 +14,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
+import android.speech.tts.TextToSpeech
 import android.util.DisplayMetrics
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -21,7 +22,6 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.joel.gameagent.GameAgentAccessibilityService
-import com.joel.gameagent.MainActivity
 import com.joel.gameagent.brain.DecisionEngine
 import com.joel.gameagent.brain.GeminiNanoBrain
 import com.joel.gameagent.brain.HeuristicFallbackBrain
@@ -32,8 +32,8 @@ import com.joel.gameagent.model.ScreenState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import java.util.Locale
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
@@ -43,13 +43,6 @@ import kotlin.coroutines.suspendCoroutine
  * pixels on screen - works identically for a settings menu, a Unity
  * game, or a live video stream, since a screenshot doesn't care what
  * drew it.
- *
- * Two kinds of candidate actions come out of every frame:
- *  - OCR text blocks (read any visible text and where it is)
- *  - a grid of generic regions covering the whole screen, so it can
- *    still learn to tap things with NO text at all (icons, sprites,
- *    a specific card, a specific pixel button) - it just won't know
- *    what that region "means", only that tapping it worked before.
  */
 class VisionCaptureService : Service() {
 
@@ -60,31 +53,65 @@ class VisionCaptureService : Service() {
         private const val CAPTURE_INTERVAL_MS = 900L
         private const val GRID_COLS = 8
         private const val GRID_ROWS = 14
+        /** How much of the screen top/bottom to treat as "system UI, never tap here". */
+        private const val SAFE_MARGIN_FRACTION = 0.06
 
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
-        /** Comma-separated package names the agent must never act inside. */
         const val EXTRA_EXCLUDED_PACKAGES = "excluded_packages"
 
         @Volatile var isRunning: Boolean = false
+
+        /**
+         * Live-editable instruction from the user, e.g. "collect coins,
+         * avoid the shop". Read fresh every frame - MainActivity writes
+         * to this directly (same process), no binding needed.
+         */
+        @Volatile var currentInstruction: String = ""
+
+        /**
+         * Rolling log of what the agent just did and why, newest first.
+         * MainActivity polls this to show a live "thought process" feed.
+         */
+        private const val LOG_CAPACITY = 60
+        private val _thoughtLog = ArrayDeque<String>()
+        val thoughtLog: List<String>
+            get() = synchronized(_thoughtLog) { _thoughtLog.toList() }
+
+        private fun logThought(message: String) {
+            synchronized(_thoughtLog) {
+                _thoughtLog.addFirst(message)
+                while (_thoughtLog.size > LOG_CAPACITY) _thoughtLog.removeLast()
+            }
+            Log.i(TAG, message)
+        }
     }
 
     private val scope = CoroutineScope(Dispatchers.Default + Job())
     private lateinit var memory: MemoryStore
     private lateinit var brain: DecisionEngine
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    private var tts: TextToSpeech? = null
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
-    /** Packages the agent must never tap inside - checked before anything else, every frame. */
     private var excludedPackages: Set<String> = emptySet()
+    private var screenHeightPx = 0
 
     private var lastActionKey: String? = null
     private var lastScreenHash: String? = null
     private var lastMetric: Long = 0L
+    private var actionsSinceLastSpeech = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) tts?.language = Locale.UK
+        }
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
@@ -109,14 +136,9 @@ class VisionCaptureService : Service() {
 
         val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
-        // Required since Android 14 - createVirtualDisplay() throws if no
-        // callback is registered first. onStop() fires if the system
-        // revokes the projection (e.g. user stops it from the
-        // notification/quick-settings), so we clean up and stop the
-        // service properly instead of crashing on the next capture.
         mediaProjection?.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
-                Log.i(TAG, "MediaProjection stopped by system - shutting down")
+                logThought("Screen sharing was stopped - shutting down.")
                 isRunning = false
                 stopSelf()
             }
@@ -124,6 +146,8 @@ class VisionCaptureService : Service() {
         setUpVirtualDisplay()
 
         isRunning = true
+        logThought("Started. Excluding ${excludedPackages.size} app(s).")
+        speak("Ready. I'm watching now.")
         scope.launch { captureLoop() }
         return START_STICKY
     }
@@ -134,6 +158,7 @@ class VisionCaptureService : Service() {
         virtualDisplay?.release()
         imageReader?.close()
         mediaProjection?.stop()
+        tts?.shutdown()
     }
 
     private fun setUpVirtualDisplay() {
@@ -141,6 +166,7 @@ class VisionCaptureService : Service() {
         val windowManager = getSystemService(WINDOW_SERVICE) as android.view.WindowManager
         @Suppress("DEPRECATION")
         windowManager.defaultDisplay.getRealMetrics(metrics)
+        screenHeightPx = metrics.heightPixels
 
         imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, PixelFormat.RGBA_8888, 2)
         virtualDisplay = mediaProjection?.createVirtualDisplay(
@@ -165,12 +191,8 @@ class VisionCaptureService : Service() {
     private suspend fun actOnce() {
         val foreground = GameAgentAccessibilityService.currentForegroundPackage
 
-        // Hard safety boundary: if we've landed in an excluded app
-        // (banking, messaging, whatever's on the blocklist), don't look
-        // at it, don't tap in it, don't even OCR it - just leave
-        // immediately. This runs before any capture/OCR/decision work,
-        // so an excluded app never gets touched in any way.
         if (foreground != null && foreground in excludedPackages) {
+            logThought("$foreground is excluded - going home, not looking at it.")
             perform(GameAction.GoHome)
             return
         }
@@ -178,11 +200,8 @@ class VisionCaptureService : Service() {
         val bitmap = captureFrame() ?: return
         val state = buildScreenState(bitmap, foreground.orEmpty())
 
-        // Ad-close check takes priority over everything else - same
-        // idea as before, just matched against OCR'd text now instead
-        // of accessibility node text, so it works on ads drawn as pure
-        // video/canvas content too.
         findAdCloseElement(state)?.let { closeButton ->
+            logThought("Looks like an ad/popup - closing it.")
             perform(GameAction.Tap(closeButton))
             return
         }
@@ -193,13 +212,57 @@ class VisionCaptureService : Service() {
         }
 
         val candidates = buildCandidateActions(state)
-        val chosen = brain.choose(state, candidates)
+
+        // If the user typed/spoke an instruction, and any candidate's
+        // visible text matches a word from it, strongly favour that
+        // candidate instead of the normal learned/exploratory pick. This
+        // is the "chat box" steering mechanism - simple keyword bias
+        // rather than true language understanding, since this phone has
+        // no Nano to reason about it properly.
+        val instruction = currentInstruction.trim().lowercase()
+        val instructed = if (instruction.isNotEmpty()) {
+            val words = instruction.split(Regex("[,.]?\\s+")).filter { it.length > 2 }
+            candidates.filterIsInstance<GameAction.Tap>().firstOrNull { tap ->
+                val label = tap.element.text.lowercase()
+                label.isNotBlank() && words.any { w -> label.contains(w) }
+            }
+        } else null
+
+        val chosen = instructed ?: brain.choose(state, candidates)
+
+        val reasoning = when {
+            instructed != null -> "instruction match ('$instruction')"
+            chosen is GameAction.Tap && chosen.element.className == "ocr_text" -> "read text \"${chosen.element.text.take(30)}\""
+            else -> "learned/explored"
+        }
+        logThought("[${state.packageName}] ${chosen.describe()} - $reasoning")
+
+        actionsSinceLastSpeech++
+        if (actionsSinceLastSpeech >= 8) {
+            actionsSinceLastSpeech = 0
+            speak(shortSpokenSummary(chosen, state.packageName))
+        }
 
         lastActionKey = chosen.describe()
         lastScreenHash = state.layoutHash()
         lastMetric = state.primaryMetric()
 
         perform(chosen)
+    }
+
+    private fun shortSpokenSummary(action: GameAction, pkg: String): String {
+        val appName = pkg.substringAfterLast(".").ifBlank { "the app" }
+        return when (action) {
+            is GameAction.Tap -> "Still exploring $appName."
+            GameAction.GoBack -> "Backing out of a screen."
+            GameAction.GoHome -> "Heading home."
+            is GameAction.LaunchApp -> "Opening ${action.packageName.substringAfterLast(".")}."
+            else -> "Working on it."
+        }
+    }
+
+    private fun speak(text: String) {
+        tts?.speak(text, TextToSpeech.QUEUE_ADD, null, null)
     }
 
     private suspend fun captureFrame(): Bitmap? = suspendCoroutine { cont ->
@@ -225,7 +288,13 @@ class VisionCaptureService : Service() {
         }
     }
 
-    /** Builds a ScreenState out of OCR'd text blocks plus a fallback grid of generic regions. */
+    /** True if a y-coordinate falls in the reserved status-bar / nav-bar strip - never tap there. */
+    private fun isInSystemUiZone(y: Int): Boolean {
+        if (screenHeightPx == 0) return false
+        val margin = (screenHeightPx * SAFE_MARGIN_FRACTION).toInt()
+        return y < margin || y > screenHeightPx - margin
+    }
+
     private suspend fun buildScreenState(bitmap: Bitmap, foregroundPackage: String): ScreenState {
         val elements = mutableListOf<ScreenElement>()
         val numbers = mutableListOf<Long>()
@@ -235,6 +304,7 @@ class VisionCaptureService : Service() {
             val result = recognizer.process(input).await()
             for (block in result.textBlocks) {
                 val box = block.boundingBox ?: continue
+                if (isInSystemUiZone(box.centerY())) continue
                 val text = block.text
                 Regex("\\d+").findAll(text).forEach { m -> m.value.toLongOrNull()?.let(numbers::add) }
                 elements += ScreenElement(
@@ -250,20 +320,18 @@ class VisionCaptureService : Service() {
             Log.w(TAG, "OCR failed on this frame", e)
         }
 
-        // Generic grid regions - these are the "learn to tap ANYTHING"
-        // fallback. Every region is always offered as a candidate action
-        // regardless of what OCR found, so icons/sprites with no text
-        // can still be learned through trial and error.
         val cellW = bitmap.width / GRID_COLS
         val cellH = bitmap.height / GRID_ROWS
         for (row in 0 until GRID_ROWS) {
             for (col in 0 until GRID_COLS) {
+                val cy = row * cellH + cellH / 2
+                if (isInSystemUiZone(cy)) continue
                 elements += ScreenElement(
                     text = "",
                     contentDescription = "",
                     className = "grid_${row}_${col}",
                     centerX = col * cellW + cellW / 2,
-                    centerY = row * cellH + cellH / 2,
+                    centerY = cy,
                     clickable = true
                 )
             }
@@ -288,19 +356,10 @@ class VisionCaptureService : Service() {
     }
 
     private fun buildCandidateActions(state: ScreenState): List<GameAction> {
-        // Cap how many we hand to the brain each frame - with a full
-        // grid + OCR blocks this can be over 100 regions, which is more
-        // than enough noise per frame. Bias toward OCR text blocks
-        // (usually more meaningful) plus a random sample of grid cells,
-        // so exploration still eventually covers the whole screen.
         val ocrTaps = state.elements.filter { it.className == "ocr_text" }.map { GameAction.Tap(it) }
         val gridTaps = state.elements.filter { it.className.startsWith("grid_") }
             .shuffled().take(20).map { GameAction.Tap(it) }
         val swipe = GameAction.Swipe(fromX = 540, fromY = 1600, toX = 540, toY = 800)
-        // Back is always offered as a real candidate (not just forced
-        // recovery) - some games use it deliberately (closing a menu,
-        // dismissing a dialog), so it should be something the agent can
-        // learn is sometimes the right move, not only an emergency escape.
         return ocrTaps + gridTaps + swipe + GameAction.GoBack
     }
 
