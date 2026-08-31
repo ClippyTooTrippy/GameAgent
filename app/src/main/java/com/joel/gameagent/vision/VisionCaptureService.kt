@@ -109,6 +109,18 @@ class VisionCaptureService : Service() {
 
         val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
+        // Required since Android 14 - createVirtualDisplay() throws if no
+        // callback is registered first. onStop() fires if the system
+        // revokes the projection (e.g. user stops it from the
+        // notification/quick-settings), so we clean up and stop the
+        // service properly instead of crashing on the next capture.
+        mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() {
+                Log.i(TAG, "MediaProjection stopped by system - shutting down")
+                isRunning = false
+                stopSelf()
+            }
+        }, android.os.Handler(mainLooper))
         setUpVirtualDisplay()
 
         isRunning = true
