@@ -49,9 +49,9 @@ class MainActivity : AppCompatActivity() {
             }
             startForegroundService(intent)
             binding.statusText.text = if (excluded.isNotEmpty()) {
-                "Vision mode running - free-roaming, staying out of:\n$excluded"
+                "Vision mode running - free-roaming, staying out of:\n$excluded\n\nTip: pull down the notification and tap 'Instruct' to give it commands without opening this app."
             } else {
-                "Vision mode running - free-roaming the whole phone (nothing excluded)"
+                "Vision mode running - free-roaming the whole phone (nothing excluded)\n\nTip: pull down the notification and tap 'Instruct' to give it commands without opening this app."
             }
         } else {
             binding.statusText.text = "Screen capture permission was needed to start"

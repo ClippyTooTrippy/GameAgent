@@ -49,8 +49,8 @@ class VisionCaptureService : Service() {
 
     companion object {
         private const val TAG = "VisionCapture"
-        private const val NOTIF_CHANNEL = "gameagent_vision"
-        private const val NOTIF_ID = 42
+        const val NOTIF_CHANNEL = "gameagent_vision"
+        const val NOTIF_ID = 42
         private const val CAPTURE_INTERVAL_MS = 900L
         private const val GRID_COLS = 8
         private const val GRID_ROWS = 14
@@ -85,6 +85,29 @@ class VisionCaptureService : Service() {
                 while (_thoughtLog.size > LOG_CAPACITY) _thoughtLog.removeLast()
             }
             Log.i(TAG, message)
+        }
+
+        /**
+         * Builds the "Instruct" notification action with an inline reply
+         * field - lets the user type an instruction straight from the
+         * notification shade without opening the app at all.
+         */
+        fun buildInstructAction(context: android.content.Context): NotificationCompat.Action {
+            val remoteInput = androidx.core.app.RemoteInput.Builder(InstructionReceiver.KEY_INSTRUCTION_REPLY)
+                .setLabel("e.g. collect coins, avoid the shop")
+                .build()
+
+            val intent = Intent(context, InstructionReceiver::class.java).apply {
+                action = InstructionReceiver.ACTION_SEND_INSTRUCTION
+            }
+            val pendingIntent = android.app.PendingIntent.getBroadcast(
+                context, 0, intent,
+                android.app.PendingIntent.FLAG_MUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            )
+
+            return NotificationCompat.Action.Builder(
+                android.R.drawable.ic_menu_edit, "Instruct", pendingIntent
+            ).addRemoteInput(remoteInput).build()
         }
     }
 
@@ -214,7 +237,12 @@ class VisionCaptureService : Service() {
         }
 
         if (lastActionKey != null && lastScreenHash != null) {
-            val reward = (state.primaryMetric() - lastMetric).toDouble()
+            val rawReward = (state.primaryMetric() - lastMetric).toDouble()
+            // Clamp - a jackpot/bonus coin spike (thousands at once)
+            // shouldn't outweigh normal small in-game progress by 100x
+            // in the learned table. Ordinary score increments stay
+            // exactly as they were; only extreme spikes get capped.
+            val reward = rawReward.coerceIn(-200.0, 200.0)
             memory.recordOutcome(lastScreenHash!!, lastActionKey!!, reward)
         }
 
@@ -362,6 +390,21 @@ class VisionCaptureService : Service() {
         "skip ad", "skip", "close ad", "close", "no thanks", "x", "dismiss"
     )
 
+    /**
+     * Phrases that mean "tapping this leads into a rewarded ad." Left
+     * unfiltered, the agent will happily chase these forever - a jump
+     * from a few hundred coins to +10,000 for watching an ad is by far
+     * the best "reward" available on any screen, so a reward signal
+     * based on "did the number go up" will train it straight into an ad
+     * habit. These are excluded from candidates entirely - not treated
+     * as things to close (they're not popups blocking the game), just
+     * never offered as a choice.
+     */
+    private val adBaitSignals = listOf(
+        "claim now", "watch ad", "watch video", "free coins", "free gems",
+        "bonus coins", "double your", "x2 coins", "continue?", "get free"
+    )
+
     private fun findAdCloseElement(state: ScreenState): ScreenElement? {
         return state.elements.firstOrNull { el ->
             val label = el.text.trim().lowercase()
@@ -369,10 +412,33 @@ class VisionCaptureService : Service() {
         }
     }
 
+    private fun isAdBait(el: ScreenElement): Boolean {
+        val label = el.text.trim().lowercase()
+        return label.isNotEmpty() && adBaitSignals.any { label.contains(it) }
+    }
+
     private fun buildCandidateActions(state: ScreenState): List<GameAction> {
-        val ocrTaps = state.elements.filter { it.className == "ocr_text" }.map { GameAction.Tap(it) }
-        val gridTaps = state.elements.filter { it.className.startsWith("grid_") }
+        val baitElements = state.elements.filter { it.className == "ocr_text" && isAdBait(it) }
+        val ocrTaps = state.elements
+            .filter { it.className == "ocr_text" && !isAdBait(it) }
+            .map { GameAction.Tap(it) }
+
+        // Grid taps are coordinate-based, so filtering bait out of OCR
+        // isn't enough on its own - a random grid cell could still land
+        // right on the "Claim Now" button by chance. Drop any grid cell
+        // that falls near a bait element's position too.
+        val baitRadius = 140
+        val gridTaps = state.elements
+            .filter { it.className.startsWith("grid_") }
+            .filterNot { cell ->
+                baitElements.any { bait ->
+                    val dx = cell.centerX - bait.centerX
+                    val dy = cell.centerY - bait.centerY
+                    dx * dx + dy * dy < baitRadius * baitRadius
+                }
+            }
             .shuffled().take(20).map { GameAction.Tap(it) }
+
         val swipe = GameAction.Swipe(fromX = 540, fromY = 1600, toX = 540, toY = 800)
         return ocrTaps + gridTaps + swipe + GameAction.GoBack
     }
@@ -405,6 +471,7 @@ class VisionCaptureService : Service() {
             )
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setOngoing(true)
+            .addAction(buildInstructAction(this))
             .build()
     }
 }

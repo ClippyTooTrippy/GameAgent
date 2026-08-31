@@ -56,5 +56,9 @@
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 
+        <receiver
+            android:name=".vision.InstructionReceiver"
+            android:exported="false" />
+
     </application>
 </manifest>
