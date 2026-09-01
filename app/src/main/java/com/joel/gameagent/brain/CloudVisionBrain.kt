@@ -46,7 +46,7 @@ class CloudVisionBrain(private val apiKey: String) {
     companion object {
         private const val TAG = "CloudVisionBrain"
         private const val MODEL_ENDPOINT =
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
         private const val MAX_DIMENSION = 768
     }
 
@@ -71,8 +71,8 @@ class CloudVisionBrain(private val apiKey: String) {
                 requestMethod = "POST"
                 setRequestProperty("Content-Type", "application/json")
                 doOutput = true
-                connectTimeout = TimeUnit.SECONDS.toMillis(6).toInt()
-                readTimeout = TimeUnit.SECONDS.toMillis(6).toInt()
+                connectTimeout = TimeUnit.SECONDS.toMillis(10).toInt()
+                readTimeout = TimeUnit.SECONDS.toMillis(15).toInt()
             }
             OutputStreamWriter(conn.outputStream).use { it.write(requestBody.toString()) }
 
