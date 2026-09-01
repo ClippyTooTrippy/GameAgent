@@ -52,6 +52,20 @@ class VisionCaptureService : Service() {
         const val NOTIF_CHANNEL = "gameagent_vision"
         const val NOTIF_ID = 42
         private const val CAPTURE_INTERVAL_MS = 900L
+
+        /**
+         * Gemini's free tier allows 5 generateContent calls per minute
+         * per model. At a 900ms capture interval, asking the cloud on
+         * every frame is ~66 calls a minute - it spends the whole
+         * minute's quota in about 5 seconds, then 429s until the window
+         * resets. The visible effect is worse than not having a key at
+         * all: a few genuinely smart moves, then a long stretch of the
+         * dumb local brain while the log still looks like the AI is
+         * driving. Spacing calls to one per 13s keeps us just under the
+         * limit; the local brain handles the frames in between, which
+         * is what it was always there for.
+         */
+        private const val CLOUD_MIN_INTERVAL_MS = 13_000L
         private const val GRID_COLS = 8
         private const val GRID_ROWS = 14
         /** How much of the screen top/bottom to treat as "system UI, never tap here". */
@@ -116,6 +130,7 @@ class VisionCaptureService : Service() {
     private lateinit var memory: MemoryStore
     private lateinit var fallback: HeuristicFallbackBrain
     private var cloudBrain: CloudVisionBrain? = null
+    private var lastCloudCallAt = 0L
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     private var tts: TextToSpeech? = null
 
@@ -360,7 +375,12 @@ class VisionCaptureService : Service() {
         var reasoning = ""
 
         val cb = cloudBrain
-        if (cb != null) {
+        val now = System.currentTimeMillis()
+        val cloudReady = cb != null &&
+            now >= cb.backoffUntilMs &&
+            now - lastCloudCallAt >= CLOUD_MIN_INTERVAL_MS
+        if (cb != null && cloudReady) {
+            lastCloudCallAt = now
             val decision = cb.choose(bitmap, state, candidates, instruction)
             if (decision != null) {
                 chosen = candidates.getOrNull(decision.index)

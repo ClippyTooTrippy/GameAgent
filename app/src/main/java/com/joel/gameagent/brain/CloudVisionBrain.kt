@@ -52,6 +52,15 @@ class CloudVisionBrain(private val apiKey: String) {
 
     data class Decision(val index: Int, val reason: String)
 
+    /**
+     * Set when the API returns 429. Until this timestamp passes there is
+     * no point calling at all - the caller checks it and stays on the
+     * local brain instead.
+     */
+    @Volatile
+    var backoffUntilMs: Long = 0L
+        private set
+
     suspend fun choose(
         bitmap: Bitmap,
         state: ScreenState,
@@ -78,7 +87,19 @@ class CloudVisionBrain(private val apiKey: String) {
 
             if (conn.responseCode !in 200..299) {
                 val err = conn.errorStream?.bufferedReader()?.readText()
-                Log.w(TAG, "API error ${conn.responseCode}: $err")
+                // 429 means we've spent the minute's quota. Google tells
+                // us exactly how long to wait in retryDelay - honour it
+                // rather than hammering the endpoint, since every extra
+                // call while throttled just burns battery for a
+                // guaranteed error.
+                if (conn.responseCode == 429) {
+                    val wait = Regex("\"retryDelay\"\\s*:\\s*\"(\\d+)s\"")
+                        .find(err ?: "")?.groupValues?.get(1)?.toLongOrNull() ?: 30L
+                    backoffUntilMs = System.currentTimeMillis() + (wait + 1) * 1000L
+                    Log.w(TAG, "Rate limited - pausing cloud calls for ${wait}s")
+                } else {
+                    Log.w(TAG, "API error ${conn.responseCode}: $err")
+                }
                 return@withContext null
             }
 
