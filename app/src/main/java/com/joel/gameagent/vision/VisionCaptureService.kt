@@ -304,24 +304,37 @@ class VisionCaptureService : Service() {
             sparseFrameStreak = 0
         }
 
-        // Most video ads have no readable "skip"/"close" text at all -
-        // just a bare X icon that appears after a few seconds. A screen
-        // with almost no text, held for several frames in a row, is a
-        // strong signal we're stuck watching one. Rather than let random
-        // grid taps loose on it (which can land on the ad's own call to
-        // action and open a store page), probe the two spots where every
-        // major ad network puts its close button: top-right, then
-        // top-left, one attempt every couple of seconds.
+        // Most video/playable ads have no readable "skip"/"close" text -
+        // often no visible close control at all until you've watched
+        // long enough. A screen with almost no text held for several
+        // frames straight is a strong signal we're stuck in one. Local
+        // OCR genuinely cannot recognize icon-only close buttons or ad
+        // watermarks - it only reads text, full stop - so guessing
+        // corner positions is unreliable (they move, and this ad network
+        // puts its badge bottom-left, not the usual top corners).
+        // Back is the safer, more universal move: most ad SDKs treat it
+        // as "skip/dismiss" even with no visible X, and unlike a corner
+        // guess it can never accidentally land on the ad's own install
+        // button. Mostly try Back; occasionally still probe a corner in
+        // case this particular ad only responds to a real tap.
         if (sparseFrameStreak >= 3 && screenWidthPx > 0 && screenHeightPx > 0) {
-            val margin = (screenHeightPx * SAFE_MARGIN_FRACTION).toInt() + 40
-            val corners = listOf(
-                screenWidthPx - 60 to margin,   // top-right - most common
-                60 to margin                     // top-left - second most common
-            )
-            val (cx, cy) = corners[lastCornerTried % corners.size]
-            lastCornerTried++
-            logThought("Looks like a video ad with no text - trying the close spot in the corner.")
-            perform(GameAction.Tap(ScreenElement("", "", "ad_corner_probe", cx, cy, true)))
+            val useBack = sparseFrameStreak % 3 != 0
+            if (useBack) {
+                logThought("Stuck on a screen with no readable text (likely an ad) - trying Back.")
+                perform(GameAction.GoBack)
+            } else {
+                val margin = (screenHeightPx * SAFE_MARGIN_FRACTION).toInt() + 40
+                val corners = listOf(
+                    screenWidthPx - 60 to margin,                    // top-right
+                    60 to margin,                                     // top-left
+                    screenWidthPx - 60 to screenHeightPx - margin,   // bottom-right
+                    60 to screenHeightPx - margin                     // bottom-left
+                )
+                val (cx, cy) = corners[lastCornerTried % corners.size]
+                lastCornerTried++
+                logThought("Back didn't clear it - trying a corner tap instead.")
+                perform(GameAction.Tap(ScreenElement("", "", "ad_corner_probe", cx, cy, true)))
+            }
             return
         }
 
@@ -508,7 +521,9 @@ class VisionCaptureService : Service() {
      */
     private val adBaitSignals = listOf(
         "claim now", "watch ad", "watch video", "free coins", "free gems",
-        "bonus coins", "double your", "x2 coins", "continue?", "get free"
+        "bonus coins", "double your", "x2 coins", "continue?", "get free",
+        "install", "download now", "get it now", "play now", "get app",
+        "download", "install now"
     )
 
     private fun findAdCloseElement(state: ScreenState): ScreenElement? {
